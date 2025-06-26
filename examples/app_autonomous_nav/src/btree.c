@@ -8,7 +8,7 @@
 #include "param.h"
 
 float turn_rate = 1.0f;
-float fwd_vel = 1.0f;
+float fwd_vel = 0.8f;
 
 // ========= Composite Nodes ===========
 
