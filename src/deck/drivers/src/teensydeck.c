@@ -39,11 +39,13 @@
 
 #include "uart1.h"
 #include "teensydeck.h"
+#include "led.h"
+#include "ledseq.h"
 
 #include "cf_math.h"
 
 static bool isInit = false;
-bool status = false;
+bool status = true; // TEST THIS
 
 
 //////////////COMMUNICATION VARIABLES///////////////////
@@ -75,12 +77,23 @@ float stateEstimateRoll, stateEstimatePitch;
 logVarId_t idPidRateRollOutput, idPidRatePitchOutput, idPidRateYawOutput;
 float pidRateRollOutput, pidRatePitchOutput, pidRateYawOutput;
 
+
+// LED variables
+ledseqStep_t seq_noteensy_def[] = {
+  { true, LEDSEQ_WAITMS(50)},
+  {false, LEDSEQ_WAITMS(50)},
+  {    0, LEDSEQ_LOOP},
+};
+
+ledseqContext_t seq_noteensy = {
+  .sequence = seq_noteensy_def,
+  .led = SYS_LED,
+};
+
 void serialParseMessageOut(void)
 {
   //Copy received buffer to structure
   memmove(&myserial_control_out,&serial_cf_msg_buf_out[1],sizeof(struct serial_control_out)-1);
-//   DEBUG_PRINT("Correct message received and storing\n");
-//   DEBUG_PRINT("Stored roll p, i, d is %i, %i, %i\n", myserial_control_in.roll_p, myserial_control_in.roll_i, myserial_control_in.roll_d);
 }
 
 void setControlInMessage(void) 
@@ -126,6 +139,12 @@ void uartReadControlOutMessage(void)
         // if status was true, set it to false for debugging purposes
         if (status) {
             DEBUG_PRINT("Did not receive message on time, trying to resend\n");
+            // Turn on the red LED to indicate error
+            ledseqStopBlocking(&seq_calibrated); // Stop the alive sequence
+            ledseqStopBlocking(&seq_alive); // Stop the alive sequence
+            vTaskDelay(M2T(5));
+            ledseqRunBlocking(&seq_noteensy); // Run the noteensy sequence
+            // ledSet(LED_RED_R, 1); // Turn on red LED to indicate error
             status = false;
         }
     };
@@ -146,6 +165,10 @@ void uartReadControlOutMessage(void)
             // if status was false, set it to true for debugging purposes
             if (!status) {
                 DEBUG_PRINT("Connection (re-)gained\n");
+                // Restart the led sequence
+                ledseqStopBlocking(&seq_noteensy); // Stop the noteensy sequence
+                ledseqRun(&seq_calibrated);
+                ledseqRun(&seq_alive);
                 status = true;
             }
         }
@@ -212,6 +235,9 @@ void teensyInit(DeckInfo* info)
   idPidRateRollOutput = logGetVarId("pid_rate", "roll_output");
   idPidRatePitchOutput = logGetVarId("pid_rate", "pitch_output");
   idPidRateYawOutput = logGetVarId("pid_rate", "yaw_output");
+
+  // Register the LED sequence
+  ledseqRegisterSequence(&seq_noteensy);
   
 //   Add delay to ensure the deck is ready before starting NOT NECESSARY?
 //   vTaskDelay(M2T(1000)); // Delay for 1 seconds (1000 ms)
@@ -299,11 +325,12 @@ LOG_ADD(LOG_UINT16, forward_ll, &myserial_control_out.dist_ll_forward)
 LOG_ADD(LOG_UINT16, forward_ml, &myserial_control_out.dist_ml_forward)
 LOG_ADD(LOG_UINT16, forward_mr, &myserial_control_out.dist_mr_forward)
 LOG_ADD(LOG_UINT16, forward_rr, &myserial_control_out.dist_rr_forward)
+LOG_ADD(LOG_UINT8, forward_new, &myserial_control_out.dist_forward_new)
 LOG_ADD(LOG_UINT16, bottom_ll, &myserial_control_out.dist_ll_bottom)
 LOG_ADD(LOG_UINT16, bottom_ml, &myserial_control_out.dist_ml_bottom)
 LOG_ADD(LOG_UINT16, bottom_mr, &myserial_control_out.dist_mr_bottom)
 LOG_ADD(LOG_UINT16, bottom_rr, &myserial_control_out.dist_rr_bottom)
-
+LOG_ADD(LOG_UINT8, bottom_new, &myserial_control_out.dist_bottom_new)
 LOG_GROUP_STOP(teensy)
 
 PARAM_GROUP_START(deck)

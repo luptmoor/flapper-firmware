@@ -43,6 +43,8 @@
 
 #include "btree.h"
 #include "platform_defaults.h"
+#include "led.h"
+#include "ledseq.h"
 
 #define DEBUG_MODULE "AUTONOMOUS"
 #include "debug.h"
@@ -68,6 +70,9 @@ float heightEstimate;
 logVarId_t idAux3, idCppmRoll, idCppmPitch, idCppmYawrate, idCppmThrust;
 float cppmRoll, cppmPitch, cppmYawrate, cppmThrust;
 
+// height variables
+int16_t bottom_ll_prev = 0;
+
 // mode variables
 bool isActive = false;
 bool setAutonomousMode = false;
@@ -88,6 +93,29 @@ float avoidYawrate = AUTNAV_AVOID_YAWRATE; // yaw rate to apply when avoiding ob
 uint32_t avoidDuration = AUTNAV_AVOID_DURATION; // duration of the avoidance maneuver in milliseconds
 float holdHeightScale = AUTNAV_HOLD_HEIGHT_SCALE; // scale for the height hold setpoint based on thrust
 float holdHeightDeadzone = AUTNAV_HOLD_HEIGHT_DEADZONE; // deadzone for the height hold setpoint
+
+// LED variables
+ledseqStep_t seq_dist_left_def[] = {
+  { true, LEDSEQ_WAITMS(1950)},
+  {false, LEDSEQ_WAITMS(50)},
+  {    0, LEDSEQ_LOOP},
+};
+
+ledseqContext_t seq_dist_left = {
+  .sequence = seq_dist_left_def,
+  .led = LED_BLUE_NRF,
+};
+
+ledseqStep_t seq_dist_right_def[] = {
+  { true, LEDSEQ_WAITMS(1950)},
+  {false, LEDSEQ_WAITMS(50)},
+  {    0, LEDSEQ_LOOP},
+};
+
+ledseqContext_t seq_dist_right = {
+  .sequence = seq_dist_right_def,
+  .led = LED_BLUE_L,
+};
 
 
 void getLogIds()
@@ -112,6 +140,36 @@ void getLogIds()
 
 }
 
+void turnOffLeds()
+{
+  // Turn off all LEDs
+  ledSet(LED_BLUE_L, 0);
+  ledSet(LED_BLUE_NRF, 0);
+}
+
+void turnOnLeds()
+{
+  // Turn on all LEDs
+  ledSet(LED_BLUE_L, 1);
+  ledSet(LED_BLUE_NRF, 1);
+}
+
+void ledseqSetDistance(float distLeft, float distRight) {
+  // float leftScaled = distLeft / 4.0f;
+  int onTimeLeft = 125 * distLeft * distLeft;;
+  int offTimeLeft = 100;
+
+  // float rightScaled = distRight / 4.0f;
+  int onTimeRight = 125 * distRight * distRight;
+  int offTimeRight = 100;
+
+  seq_dist_left.sequence[0].action = onTimeLeft;
+  seq_dist_left.sequence[1].action = offTimeLeft;
+  seq_dist_right.sequence[0].action = onTimeRight;
+  seq_dist_right.sequence[1].action = offTimeRight;
+}
+
+
 static void setHeightHoldSetpoint(setpoint_t *setpoint, float roll, float pitch, float z, float yawrate)
 {
   setpoint->mode.x = modeDisable;
@@ -133,16 +191,20 @@ void sendHeightMeasurementToEstimator()
   int16_t bottom_mr = logGetInt(idBottomMR);
   int16_t bottom_rr = logGetInt(idBottomRR);
 
-  float bottom_dist = ((float)bottom_ll + (float)bottom_ml + (float)bottom_mr + (float)bottom_rr) / 4;
-  bottom_dist = (bottom_dist > 80) ? bottom_dist : 0;
-  bottom_dist /= 1000;
-
-  rangeSet(rangeDown, bottom_dist);
+  if (bottom_ll_prev != bottom_ll)
+  {
+    float bottom_dist = ((float)bottom_ll + (float)bottom_ml + (float)bottom_mr + (float)bottom_rr) / 4;
+    bottom_dist = (bottom_dist > 80) ? bottom_dist : 0;
+    bottom_dist /= 1000;
   
-  // IMPORTANT: currently no filtering of bottom sensor is performed
-  // (except for averaging over all readings) this means that
-  // it assumes a flat ground plane
-  rangeEnqueueDownRangeInEstimator(bottom_dist, 0, xTaskGetTickCount());
+    rangeSet(rangeDown, bottom_dist);
+    
+    // IMPORTANT: currently no filtering of bottom sensor is performed
+    // (except for averaging over all readings) this means that
+    // it assumes a flat ground plane
+    rangeEnqueueDownRangeInEstimator(bottom_dist, 0, xTaskGetTickCount());
+  }
+  bottom_ll_prev = bottom_ll;
 }
 
 int16_t setActiveStatus()
@@ -194,6 +256,8 @@ bool avoidForwardObstacles()
   forwardML = forward_ml > 0 ? (float) forward_ml / 1000.0f: 4.0f;
   forwardMR = forward_mr > 0 ? (float) forward_mr / 1000.0f: 4.0f;
   forwardRR = forward_rr > 0 ? (float) forward_rr / 1000.0f: 4.0f;
+
+  ledseqSetDistance((forwardLL + forwardML)/2, (forwardMR + forwardRR)/2);
   
   if (forwardML < obstacleMinimumDistance || forwardMR < obstacleMinimumDistance)
   {
@@ -210,6 +274,10 @@ bool avoidForwardObstacles()
 void appMain()
 {
   getLogIds();
+
+  // Register the LED sequence
+  ledseqRegisterSequence(&seq_dist_left);
+  ledseqRegisterSequence(&seq_dist_right);
 
   while (1)
   {
@@ -248,6 +316,10 @@ void appMain()
         DEBUG_PRINT("Altitude at time of switching: %f\n", (double)heightEstimate);
         holdHeight = heightEstimate;
         setAutonomousMode = false;
+
+          // Turn on the LEDs
+        ledseqRunBlocking(&seq_dist_left);
+        ledseqRunBlocking(&seq_dist_right);
       }
 
       setpoint_t setpoint;
@@ -258,7 +330,7 @@ void appMain()
       float vz = (cppmThrust - 32767) / 32767.0f;
       vz = (fabsf(vz) < holdHeightDeadzone) ? 0.0f : vz;
       holdHeight += vz * holdHeightScale;
-      
+
       // Pitch 6 degrees forward always, unless we are avoiding obstacles
       //pitchOffset = FORWARD_PITCH;
 
@@ -327,9 +399,13 @@ void appMain()
     {
       commanderRelaxPriority();
       setManualMode = false;
+      ledseqStopBlocking(&seq_dist_left);
+      ledseqStopBlocking(&seq_dist_right);
+      turnOnLeds();
     }
   }
 }
+
 
 
 PARAM_GROUP_START(auto_nav)
